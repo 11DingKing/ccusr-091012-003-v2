@@ -76,10 +76,12 @@ class OperationLogSerializer(serializers.ModelSerializer):
     """操作日志序列化器"""
     user_name = serializers.CharField(source='user.username', read_only=True)
     action_display = serializers.CharField(source='get_action_display', read_only=True)
-    
+    case_no = serializers.CharField(source='case.case_no', read_only=True, default=None)
+
     class Meta:
         model = OperationLog
         fields = [
             'id', 'user', 'user_name', 'action', 'action_display',
-            'module', 'detail', 'ip_address', 'user_agent', 'created_at'
+            'module', 'detail', 'case', 'case_no',
+            'ip_address', 'user_agent', 'created_at'
         ]

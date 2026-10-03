@@ -135,45 +135,53 @@ class GoodsSerializer(serializers.ModelSerializer):
     variety_name = serializers.CharField(source='variety.name', read_only=True)
     category_name = serializers.CharField(source='variety.category.name', read_only=True)
     unit_name = serializers.CharField(source='variety.category.unit.name', read_only=True)
+    case_no = serializers.CharField(source='case.case_no', read_only=True, default=None)
     is_warning = serializers.BooleanField(read_only=True)
-    
+
     class Meta:
         model = Goods
         fields = [
-            'id', 'name', 'code', 'variety', 'variety_name',
+            'id', 'case', 'case_no', 'name', 'code', 'variety', 'variety_name',
             'category_name', 'unit_name', 'specification',
             'quantity', 'warning_threshold', 'location',
             'remark', 'is_active', 'is_warning',
             'created_at', 'updated_at'
         ]
+        read_only_fields = ['id', 'case', 'created_at', 'updated_at']
 
 
 class StockInSerializer(serializers.ModelSerializer):
     """入库记录序列化器"""
     goods_name = serializers.CharField(source='goods.name', read_only=True)
     operator_name = serializers.CharField(source='operator.username', read_only=True)
-    
+    case_no = serializers.CharField(source='case.case_no', read_only=True, default=None)
+
     class Meta:
         model = StockIn
         fields = [
-            'id', 'goods', 'goods_name', 'operator', 'operator_name',
+            'id', 'case', 'case_no', 'goods', 'goods_name',
+            'operator', 'operator_name',
             'quantity', 'batch_no', 'supplier', 'stock_in_time', 'remark'
         ]
+        read_only_fields = ['id', 'case', 'operator', 'stock_in_time']
 
 
 class StockOutSerializer(serializers.ModelSerializer):
     """出库记录序列化器"""
     goods_name = serializers.CharField(source='goods.name', read_only=True)
     operator_name = serializers.CharField(source='operator.username', read_only=True)
+    case_no = serializers.CharField(source='case.case_no', read_only=True, default=None)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
-    
+
     class Meta:
         model = StockOut
         fields = [
-            'id', 'goods', 'goods_name', 'operator', 'operator_name',
+            'id', 'case', 'case_no', 'goods', 'goods_name',
+            'operator', 'operator_name',
             'receiver', 'receiver_dept', 'quantity', 'status', 'status_display',
             'stock_out_time', 'remark', 'created_at'
         ]
+        read_only_fields = ['id', 'case', 'operator', 'status', 'stock_out_time', 'created_at']
 
 
 class WarningSerializer(serializers.ModelSerializer):

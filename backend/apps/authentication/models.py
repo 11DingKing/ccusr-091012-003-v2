@@ -88,9 +88,14 @@ class OperationLog(models.Model):
         ('delete', '删除'),
         ('export', '导出'),
         ('import', '导入'),
+        ('access_denied', '访问被拒绝'),
     ]
     
     user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, verbose_name='操作用户')
+    case = models.ForeignKey(
+        'cases.Case', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='operation_logs', verbose_name='关联案件'
+    )
     action = models.CharField('操作类型', max_length=20, choices=ACTION_CHOICES)
     module = models.CharField('操作模块', max_length=50)
     detail = models.TextField('操作详情', blank=True)

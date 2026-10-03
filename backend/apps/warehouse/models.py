@@ -99,6 +99,11 @@ class Variety(models.Model):
 
 class Goods(models.Model):
     """货物模型"""
+    case = models.ForeignKey(
+        'cases.Case', on_delete=models.PROTECT,
+        null=True, blank=True,
+        related_name='goods', verbose_name='所属案件'
+    )
     variety = models.ForeignKey(
         Variety, on_delete=models.CASCADE,
         related_name='goods', verbose_name='所属品种'
@@ -131,6 +136,11 @@ class Goods(models.Model):
 
 class StockIn(models.Model):
     """入库记录模型"""
+    case = models.ForeignKey(
+        'cases.Case', on_delete=models.PROTECT,
+        null=True, blank=True,
+        related_name='stock_ins', verbose_name='所属案件'
+    )
     goods = models.ForeignKey(
         Goods, on_delete=models.CASCADE,
         related_name='stock_ins', verbose_name='货物'
@@ -163,7 +173,12 @@ class StockOut(models.Model):
         ('rejected', '已拒绝'),
         ('completed', '已完成'),
     ]
-    
+
+    case = models.ForeignKey(
+        'cases.Case', on_delete=models.PROTECT,
+        null=True, blank=True,
+        related_name='stock_outs', verbose_name='所属案件'
+    )
     goods = models.ForeignKey(
         Goods, on_delete=models.CASCADE,
         related_name='stock_outs', verbose_name='货物'

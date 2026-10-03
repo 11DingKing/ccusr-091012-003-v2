@@ -1,8 +1,13 @@
 """
 仓库管理视图
+
+保管记录（货物、入库、出库）的列表、详情、创建统一通过
+apps.cases.authorization.ScopeAuthorizer 做授权判断，与导出、操作日志查询
+使用同一套规则，避免出现任何绕过案件范围的入口。
 """
 import logging
 import io
+from decimal import Decimal
 from django.http import HttpResponse
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
@@ -10,6 +15,8 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from apps.core.response import success_response, error_response
+from apps.cases.authorization import ScopeAuthorizer, deny_message
+from apps.cases.models import Case
 from .models import Unit, Category, Variety, Goods, StockIn, StockOut, Warning, Approval
 from .serializers import (
     UnitSerializer, UnitCreateSerializer,
@@ -20,6 +27,17 @@ from .serializers import (
 )
 
 logger = logging.getLogger('apps')
+
+
+def _paginate(request, queryset):
+    page = max(int(request.query_params.get('page', 1)), 1)
+    page_size = max(int(request.query_params.get('page_size', 10)), 1)
+    start = (page - 1) * page_size
+    return page, page_size, queryset.count(), queryset[start:start + page_size]
+
+
+def _scope_for(request):
+    return ScopeAuthorizer(request.user)
 
 
 # ==================== 单位管理 ====================
@@ -561,78 +579,208 @@ class VarietyImportView(APIView):
         )
 
 
-# ==================== 其他视图占位 ====================
+# ==================== 货物 / 出入库 / 预警 / 审批（统一案件范围授权） ====================
 
-class DashboardView(APIView):
-    """仪表盘视图"""
-    permission_classes = [IsAuthenticated]
-    
-    def get(self, request):
-        return success_response(data={
-            'message': '仪表盘功能开发中...'
-        })
+def _list_response(request, queryset, resource_type, serializer_clazz, action='list'):
+    """统一的受范围保护列表：过滤、记判定、分页"""
+    authorizer = _scope_for(request)
+    scoped = authorizer.filter_queryset(queryset, resource_type)
+    case_ids = authorizer.effective_case_ids() if not authorizer.is_admin() else None
+    authorizer.record_scope_decision(resource_type, action, request, case_ids=case_ids)
+    page, page_size, total, page_items = _paginate(request, scoped)
+    return success_response(data={
+        'list': serializer_clazz(page_items, many=True).data,
+        'total': total, 'page': page, 'page_size': page_size,
+    })
+
+
+def _detail_response(request, pk, model, resource_type, serializer_clazz):
+    """统一的受范围保护详情"""
+    obj = model.objects.filter(pk=pk).first()
+    if obj is None:
+        return error_response(message='记录不存在', code=404)
+    decision = _scope_for(request).authorize_object(obj, resource_type, action='view', request=request)
+    if decision.case is not None:
+        request.scope_case_id = decision.case.id
+    if not decision.allowed:
+        return error_response(message=deny_message(decision.reason), code=403)
+    return success_response(data=serializer_clazz(obj).data)
+
+
+def _resolve_case_for_create(request):
+    """
+    新建保管记录时解析并授权目标案件。
+    管理员可不传 case（兼容历史无案件数据）；普通成员必须传且当前在案件中。
+    返回 (case, error_response)；error_response 非 None 时应直接返回。
+    """
+    case_id = request.data.get('case')
+    authorizer = _scope_for(request)
+    if authorizer.is_admin():
+        if not case_id:
+            return None, None
+        case = Case.objects.filter(pk=case_id).first()
+        if case is None:
+            return None, error_response(message='案件不存在', code=404)
+        return case, None
+
+    if not case_id:
+        decision = authorizer.authorize_case_action(
+            None, action='create', request=request, resource_id=''
+        )
+        return None, error_response(message=deny_message(decision.reason), code=403)
+    case = Case.objects.filter(pk=case_id).first()
+    if case is None:
+        return None, error_response(message='案件不存在', code=404)
+    decision = authorizer.authorize_case_action(
+        case, action='create', request=request, resource_id=str(case.id)
+    )
+    if not decision.allowed:
+        request.scope_case_id = case.id
+        return None, error_response(message=deny_message(decision.reason), code=403)
+    request.scope_case_id = case.id
+    return case, None
 
 
 class GoodsListView(APIView):
-    """货物列表视图"""
+    """货物列表/创建（案件范围）"""
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
-        return success_response(data={
-            'list': [],
-            'total': 0,
-            'page': 1,
-            'page_size': 10
-        })
+        return _list_response(
+            request,
+            Goods.objects.select_related('variety', 'variety__category', 'variety__category__unit', 'case'),
+            'goods', GoodsSerializer,
+        )
+
+    def post(self, request):
+        case, err = _resolve_case_for_create(request)
+        if err is not None:
+            return err
+        serializer = GoodsSerializer(data=request.data)
+        if not serializer.is_valid():
+            first_error = list(serializer.errors.values())[0]
+            if isinstance(first_error, list):
+                first_error = first_error[0]
+            return error_response(message=str(first_error))
+        goods = serializer.save(case=case)
+        logger.info('User %s created goods %s (case=%s)',
+                    request.user.username, goods.code, case.id if case else None)
+        return success_response(data=GoodsSerializer(goods).data, message='创建成功')
+
+
+class GoodsDetailView(APIView):
+    """货物详情（案件范围）"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        return _detail_response(request, pk, Goods, 'goods', GoodsSerializer)
 
 
 class StockInListView(APIView):
-    """入库记录列表视图"""
+    """入库记录列表/创建（案件范围）"""
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
-        return success_response(data={
-            'list': [],
-            'total': 0,
-            'page': 1,
-            'page_size': 10
-        })
+        return _list_response(
+            request,
+            StockIn.objects.select_related('goods', 'operator', 'case'),
+            'stock_in', StockInSerializer,
+        )
+
+    def post(self, request):
+        case, err = _resolve_case_for_create(request)
+        if err is not None:
+            return err
+        serializer = StockInSerializer(data=request.data)
+        if not serializer.is_valid():
+            first_error = list(serializer.errors.values())[0]
+            if isinstance(first_error, list):
+                first_error = first_error[0]
+            return error_response(message=str(first_error))
+        record = serializer.save(operator=request.user, case=case)
+        logger.info('User %s created stock-in %s (case=%s)',
+                    request.user.username, record.id, case.id if case else None)
+        return success_response(data=StockInSerializer(record).data, message='登记成功')
+
+
+class StockInDetailView(APIView):
+    """入库记录详情（案件范围）"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        return _detail_response(request, pk, StockIn, 'stock_in', StockInSerializer)
 
 
 class StockOutListView(APIView):
-    """出库记录列表视图"""
+    """出库记录列表/创建（案件范围）"""
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
-        return success_response(data={
-            'list': [],
-            'total': 0,
-            'page': 1,
-            'page_size': 10
-        })
+        return _list_response(
+            request,
+            StockOut.objects.select_related('goods', 'operator', 'case'),
+            'stock_out', StockOutSerializer,
+        )
+
+    def post(self, request):
+        case, err = _resolve_case_for_create(request)
+        if err is not None:
+            return err
+        serializer = StockOutSerializer(data=request.data)
+        if not serializer.is_valid():
+            first_error = list(serializer.errors.values())[0]
+            if isinstance(first_error, list):
+                first_error = first_error[0]
+            return error_response(message=str(first_error))
+        record = serializer.save(operator=request.user, case=case)
+        logger.info('User %s created stock-out %s (case=%s)',
+                    request.user.username, record.id, case.id if case else None)
+        return success_response(data=StockOutSerializer(record).data, message='登记成功')
+
+
+class StockOutDetailView(APIView):
+    """出库记录详情（案件范围）"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        return _detail_response(request, pk, StockOut, 'stock_out', StockOutSerializer)
 
 
 class WarningListView(APIView):
-    """预警记录列表视图"""
+    """预警记录列表（按所属货物的案件范围）"""
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
-        return success_response(data={
-            'list': [],
-            'total': 0,
-            'page': 1,
-            'page_size': 10
-        })
+        return _list_response(
+            request,
+            Warning.objects.select_related('goods', 'goods__case'),
+            'warning', WarningSerializer,
+        )
+
+
+class WarningDetailView(APIView):
+    """预警记录详情（按所属货物的案件范围）"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        return _detail_response(request, pk, Warning, 'warning', WarningSerializer)
 
 
 class ApprovalListView(APIView):
-    """审批记录列表视图"""
+    """审批记录列表（按所审批出库记录的案件范围）"""
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
-        return success_response(data={
-            'list': [],
-            'total': 0,
-            'page': 1,
-            'page_size': 10
-        })
+        return _list_response(
+            request,
+            Approval.objects.select_related('stock_out', 'stock_out__case', 'approver'),
+            'approval', ApprovalSerializer,
+        )
+
+
+class ApprovalDetailView(APIView):
+    """审批记录详情（按所审批出库记录的案件范围）"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        return _detail_response(request, pk, Approval, 'approval', ApprovalSerializer)

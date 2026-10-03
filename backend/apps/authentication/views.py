@@ -200,25 +200,38 @@ class UserDetailView(APIView):
 
 
 class OperationLogListView(APIView):
-    """操作日志列表"""
+    """
+    操作日志列表（与列表/详情/导出同一授权判断）。
+
+    - 管理员：可见全部日志（含成员退出案件后的历史操作，供审计）；
+    - 普通成员：仅可见自己当前获授权案件、且时间落在授权窗口内的日志，
+      以及本人历史上的全部操作（退出案件后其历史操作仍可自查）。
+    """
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
-        queryset = OperationLog.objects.all()
-        
+        from apps.cases.authorization import ScopeAuthorizer
+
+        queryset = OperationLog.objects.select_related('case').all()
+
         filterset = OperationLogFilter(request.query_params, queryset=queryset)
         queryset = filterset.qs
-        
+
+        authorizer = ScopeAuthorizer(request.user)
+        queryset = authorizer.filter_queryset(queryset, 'operation_log')
+        case_ids = authorizer.effective_case_ids() if not authorizer.is_admin() else None
+        authorizer.record_scope_decision('operation_log', 'log_query', request, case_ids=case_ids)
+
         page = int(request.query_params.get('page', 1))
         page_size = int(request.query_params.get('page_size', 10))
         start = (page - 1) * page_size
         end = start + page_size
-        
+
         total = queryset.count()
         logs = queryset[start:end]
-        
+
         serializer = OperationLogSerializer(logs, many=True)
-        
+
         return success_response(data={
             'list': serializer.data,
             'total': total,

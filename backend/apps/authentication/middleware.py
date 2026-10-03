@@ -66,13 +66,17 @@ class OperationLogMiddleware:
         return response
     
     def _log_operation(self, request, response):
-        """记录操作日志"""
+        """记录操作日志（成功的写操作 + 被拒绝的访问，均留痕以便审计）"""
         path = request.path
         method = request.method
-        
+
+        denied = response.status_code == 403
+
         # 检查是否需要记录
         if path in self.LOG_PATHS:
             action = self.LOG_PATHS[path]
+        elif denied:
+            action = 'access_denied'
         elif method in self.LOG_METHODS and path.startswith('/api/'):
             if method == 'POST':
                 action = 'create'
@@ -84,33 +88,37 @@ class OperationLogMiddleware:
                 return
         else:
             return
-        
-        # 只记录成功的操作
-        if response.status_code >= 400:
+
+        # 拒绝访问之外，只记录成功的操作
+        if not denied and response.status_code >= 400:
             return
-        
+
         # 获取用户
         user = getattr(request, 'jwt_user', None) or getattr(request, 'user', None)
         if user and not user.is_authenticated:
             user = None
-        
+
         # 获取模块名
         module = self._get_module_name(path)
-        
+
+        # 获取案件上下文（统一授权视图在授权时挂到 request 上）
+        case_id = getattr(request, 'scope_case_id', None)
+
         # 获取IP地址
         ip_address = self._get_client_ip(request)
-        
+
         # 创建日志记录
         try:
             OperationLog.objects.create(
                 user=user,
                 action=action,
                 module=module,
-                detail=f"{method} {path}",
+                detail=f"{method} {path}" + (' [访问被拒绝]' if denied else ''),
                 ip_address=ip_address,
-                user_agent=request.headers.get('User-Agent', '')[:500]
+                user_agent=request.headers.get('User-Agent', '')[:500],
+                case_id=case_id,
             )
-            logger.info(f"Operation logged: {user} - {action} - {module}")
+            logger.info(f"Operation logged: {user} - {action} - {module} - case={case_id}")
         except Exception as e:
             logger.error(f"Failed to log operation: {e}")
     
