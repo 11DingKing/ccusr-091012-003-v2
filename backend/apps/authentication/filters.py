@@ -12,7 +12,8 @@ class OperationLogFilter(django_filters.FilterSet):
     start_date = django_filters.DateFilter(field_name='created_at', lookup_expr='date__gte')
     end_date = django_filters.DateFilter(field_name='created_at', lookup_expr='date__lte')
     user = django_filters.NumberFilter(field_name='user_id')
-    
+    case = django_filters.NumberFilter(field_name='case_id')
+
     class Meta:
         model = OperationLog
-        fields = ['action', 'module', 'start_date', 'end_date', 'user']
+        fields = ['action', 'module', 'start_date', 'end_date', 'user', 'case']

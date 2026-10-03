@@ -99,6 +99,10 @@ class Variety(models.Model):
 
 class Goods(models.Model):
     """货物模型"""
+    case = models.ForeignKey(
+        'cases.Case', on_delete=models.PROTECT,
+        related_name='goods_set', verbose_name='所属案件'
+    )
     variety = models.ForeignKey(
         Variety, on_delete=models.CASCADE,
         related_name='goods', verbose_name='所属品种'

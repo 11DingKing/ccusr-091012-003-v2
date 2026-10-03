@@ -140,12 +140,13 @@ class GoodsSerializer(serializers.ModelSerializer):
     class Meta:
         model = Goods
         fields = [
-            'id', 'name', 'code', 'variety', 'variety_name',
+            'id', 'case', 'name', 'code', 'variety', 'variety_name',
             'category_name', 'unit_name', 'specification',
             'quantity', 'warning_threshold', 'location',
             'remark', 'is_active', 'is_warning',
             'created_at', 'updated_at'
         ]
+        extra_kwargs = {'case': {'required': True, 'allow_null': False}}
 
 
 class StockInSerializer(serializers.ModelSerializer):

@@ -14,6 +14,7 @@ INSTALLED_APPS = [
     "rest_framework",
     "django_filters",
     "apps.authentication",
+    "apps.cases",
     "apps.warehouse",
     "apps.personnel",
     "apps.reports",

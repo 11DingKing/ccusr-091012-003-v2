@@ -6,6 +6,7 @@ from rest_framework.test import APIClient
 
 from apps.authentication.backends import generate_token
 from apps.authentication.models import User
+from apps.cases.models import Case
 from .models import Approval, Category, Goods, StockIn, StockOut, Unit, Variety, Warning
 
 
@@ -14,10 +15,13 @@ class WarehouseFixture(TestCase):
         self.user = User.objects.create_user("warehouse-user", "testpass123", role="admin")
         self.client = APIClient()
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {generate_token(self.user)}")
+        self.case = Case.objects.create(name="联合调查案件", case_no="CASE-WH-001",
+                                        created_by=self.user)
         self.unit = Unit.objects.create(name="件", created_by=self.user)
         self.category = Category.objects.create(name="受控器材", unit=self.unit, created_by=self.user)
         self.variety = Variety.objects.create(name="记录终端", category=self.category, created_by=self.user)
         self.goods = Goods.objects.create(
+            case=self.case,
             variety=self.variety,
             name="执法记录终端",
             code="DEV-001",

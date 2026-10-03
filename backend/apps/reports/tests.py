@@ -6,6 +6,7 @@ from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
 from apps.authentication.backends import generate_token
 from apps.authentication.models import User
+from apps.cases.models import Case
 from apps.warehouse.models import Category, Goods, Unit, Variety, Warning
 from .cron import check_stock_warning
 from .models import DailyReport
@@ -17,10 +18,12 @@ class ReportTest(TestCase):
         self.user = User.objects.create_user("report-user", "testpass123", role="admin")
         self.client = APIClient()
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {generate_token(self.user)}")
+        case = Case.objects.create(name="报表案件", case_no="CASE-RPT-001", created_by=self.user)
         unit = Unit.objects.create(name="件", created_by=self.user)
         category = Category.objects.create(name="监管器材", unit=unit, created_by=self.user)
         variety = Variety.objects.create(name="封存设备", category=category, created_by=self.user)
         self.goods = Goods.objects.create(
+            case=case,
             variety=variety, name="封存终端", code="RPT-001", quantity=Decimal("2"), warning_threshold=Decimal("5")
         )
 

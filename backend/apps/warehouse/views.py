@@ -561,78 +561,244 @@ class VarietyImportView(APIView):
         )
 
 
-# ==================== 其他视图占位 ====================
+# ==================== 保管记录（案件范围受控） ====================
 
-class DashboardView(APIView):
-    """仪表盘视图"""
-    permission_classes = [IsAuthenticated]
-    
-    def get(self, request):
-        return success_response(data={
-            'message': '仪表盘功能开发中...'
-        })
+def _paginated(queryset, request, serializer_class):
+    page = max(int(request.query_params.get('page', 1)), 1)
+    page_size = max(int(request.query_params.get('page_size', 10)), 1)
+    start = (page - 1) * page_size
+    end = start + page_size
+    total = queryset.count()
+    rows = queryset[start:end]
+    return {
+        'list': serializer_class(rows, many=True).data,
+        'total': total, 'page': page, 'page_size': page_size,
+    }
 
 
 class GoodsListView(APIView):
-    """货物列表视图"""
+    """货物（保管记录）列表：按案件成员关系范围过滤。"""
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
-        return success_response(data={
-            'list': [],
-            'total': 0,
-            'page': 1,
-            'page_size': 10
-        })
+        from apps.cases import http as case_http
+
+        scope, case_id, denied = case_http.guard_case_param(request, 'goods')
+        if denied:
+            return denied
+        queryset = Goods.objects.filter(is_active=True).select_related(
+            'case', 'variety', 'variety__category', 'variety__category__unit')
+        queryset = case_http.visible_queryset(request, queryset, 'goods')
+        if case_id:
+            queryset = queryset.filter(case_id=case_id)
+        keyword = request.query_params.get('keyword')
+        if keyword:
+            queryset = queryset.filter(name__icontains=keyword) | \
+                queryset.filter(code__icontains=keyword)
+        return success_response(data=_paginated(
+            queryset.order_by('-created_at'), request, GoodsSerializer))
+
+    def post(self, request):
+        """登记货物：必须落入操作者有权限的案件。"""
+        from apps.cases import http as case_http
+        from apps.cases import authz
+
+        scope = authz.get_scope(request)
+        case_id = request.data.get('case')
+        if not case_id:
+            return error_response(message='请选择所属案件')
+        try:
+            authz.authorize_case_id(scope, int(case_id))
+        except (TypeError, ValueError):
+            return error_response(message='案件参数无效')
+        except authz.AccessDenied as denied:
+            case_http.log_decision(
+                request, scope, decision='deny', action='create',
+                resource_type='goods', denied=denied)
+            return error_response(message='无权向该案件登记货物', code=403)
+
+        serializer = GoodsSerializer(data=request.data)
+        if not serializer.is_valid():
+            errors = serializer.errors
+            first_error = list(errors.values())[0]
+            if isinstance(first_error, list):
+                first_error = first_error[0]
+            return error_response(message=str(first_error))
+        goods = serializer.save()
+        case_http.mark_audit_case(request, goods.case_id)
+        case_http.log_decision(
+            request, scope, decision='allow', action='create',
+            resource_type='goods', resource_id=goods.pk, case=goods.case)
+        logger.info("User %s created goods %s in case %s",
+                    request.user.username, goods.code, goods.case_id)
+        return success_response(data=GoodsSerializer(goods).data, message='创建成功')
+
+
+class GoodsDetailView(APIView):
+    """货物详情：逐对象走统一授权判断。"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        from apps.cases import http as case_http
+
+        scope = case_http.scope_for(request)
+        goods = Goods.objects.select_related(
+            'case', 'variety', 'variety__category', 'variety__category__unit'
+        ).filter(pk=pk).first()
+        if not goods:
+            return error_response(message='货物不存在', code=404)
+        obj, denied = case_http.get_or_deny(request, scope, goods, 'goods')
+        if denied:
+            return denied
+        return success_response(data=GoodsSerializer(obj).data)
 
 
 class StockInListView(APIView):
-    """入库记录列表视图"""
+    """入库记录列表：经 goods.case 收窄范围。"""
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
-        return success_response(data={
-            'list': [],
-            'total': 0,
-            'page': 1,
-            'page_size': 10
-        })
+        from apps.cases import http as case_http
+
+        _, case_id, denied = case_http.guard_case_param(request, 'stock_in')
+        if denied:
+            return denied
+        queryset = StockIn.objects.select_related(
+            'goods', 'goods__case', 'goods__variety__category__unit', 'operator')
+        queryset = case_http.visible_queryset(request, queryset, 'stock_in')
+        if case_id:
+            queryset = queryset.filter(goods__case_id=case_id)
+        return success_response(data=_paginated(
+            queryset.order_by('-stock_in_time'), request, StockInSerializer))
+
+
+class StockInDetailView(APIView):
+    """入库记录详情。"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        from apps.cases import http as case_http
+
+        scope = case_http.scope_for(request)
+        record = StockIn.objects.select_related(
+            'goods', 'goods__case', 'operator').filter(pk=pk).first()
+        if not record:
+            return error_response(message='入库记录不存在', code=404)
+        obj, denied = case_http.get_or_deny(request, scope, record, 'stock_in')
+        if denied:
+            return denied
+        return success_response(data=StockInSerializer(obj).data)
 
 
 class StockOutListView(APIView):
-    """出库记录列表视图"""
+    """出库记录列表：经 goods.case 收窄范围。"""
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
-        return success_response(data={
-            'list': [],
-            'total': 0,
-            'page': 1,
-            'page_size': 10
-        })
+        from apps.cases import http as case_http
+
+        _, case_id, denied = case_http.guard_case_param(request, 'stock_out')
+        if denied:
+            return denied
+        queryset = StockOut.objects.select_related(
+            'goods', 'goods__case', 'goods__variety__category__unit', 'operator')
+        queryset = case_http.visible_queryset(request, queryset, 'stock_out')
+        if case_id:
+            queryset = queryset.filter(goods__case_id=case_id)
+        status_param = request.query_params.get('status')
+        if status_param:
+            queryset = queryset.filter(status=status_param)
+        return success_response(data=_paginated(
+            queryset.order_by('-created_at'), request, StockOutSerializer))
+
+
+class StockOutDetailView(APIView):
+    """出库记录详情。"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        from apps.cases import http as case_http
+
+        scope = case_http.scope_for(request)
+        record = StockOut.objects.select_related(
+            'goods', 'goods__case', 'operator').filter(pk=pk).first()
+        if not record:
+            return error_response(message='出库记录不存在', code=404)
+        obj, denied = case_http.get_or_deny(request, scope, record, 'stock_out')
+        if denied:
+            return denied
+        return success_response(data=StockOutSerializer(obj).data)
 
 
 class WarningListView(APIView):
-    """预警记录列表视图"""
+    """预警记录列表：随所属货物的案件范围收窄。"""
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
-        return success_response(data={
-            'list': [],
-            'total': 0,
-            'page': 1,
-            'page_size': 10
-        })
+        from apps.cases import http as case_http
+
+        _, case_id, denied = case_http.guard_case_param(request, 'warning')
+        if denied:
+            return denied
+        queryset = Warning.objects.select_related(
+            'goods', 'goods__case')
+        queryset = case_http.visible_queryset(request, queryset, 'warning')
+        if case_id:
+            queryset = queryset.filter(goods__case_id=case_id)
+        return success_response(data=_paginated(
+            queryset.order_by('-created_at'), request, WarningSerializer))
+
+
+class WarningDetailView(APIView):
+    """预警记录详情。"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        from apps.cases import http as case_http
+
+        scope = case_http.scope_for(request)
+        record = Warning.objects.select_related('goods', 'goods__case').filter(pk=pk).first()
+        if not record:
+            return error_response(message='预警记录不存在', code=404)
+        obj, denied = case_http.get_or_deny(request, scope, record, 'warning')
+        if denied:
+            return denied
+        return success_response(data=WarningSerializer(obj).data)
 
 
 class ApprovalListView(APIView):
-    """审批记录列表视图"""
+    """审批记录列表：经出库记录→货物的案件链收窄。"""
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
-        return success_response(data={
-            'list': [],
-            'total': 0,
-            'page': 1,
-            'page_size': 10
-        })
+        from apps.cases import http as case_http
+
+        _, case_id, denied = case_http.guard_case_param(request, 'approval')
+        if denied:
+            return denied
+        queryset = Approval.objects.select_related(
+            'stock_out', 'stock_out__goods', 'stock_out__goods__case', 'approver')
+        queryset = case_http.visible_queryset(request, queryset, 'approval')
+        if case_id:
+            queryset = queryset.filter(stock_out__goods__case_id=case_id)
+        return success_response(data=_paginated(
+            queryset.order_by('-created_at'), request, ApprovalSerializer))
+
+
+class ApprovalDetailView(APIView):
+    """审批记录详情。"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        from apps.cases import http as case_http
+
+        scope = case_http.scope_for(request)
+        record = Approval.objects.select_related(
+            'stock_out', 'stock_out__goods', 'stock_out__goods__case', 'approver'
+        ).filter(pk=pk).first()
+        if not record:
+            return error_response(message='审批记录不存在', code=404)
+        obj, denied = case_http.get_or_deny(request, scope, record, 'approval')
+        if denied:
+            return denied
+        return success_response(data=ApprovalSerializer(obj).data)
